@@ -49,40 +49,51 @@ fn main() -> anyhow::Result<()> {
             Err(err) => Err(anyhow::Error::new(err).context(format!("failed to parse csv record. row: {index}")))
         });
 
-    // collect the datapoints with the calculated euclidean distance from the
-    // provided datapoint
-    let mut collected: Vec<(f64, KnnRecord)> = Vec::new();
+    // collect all the records since we are offering the ability to run k over
+    // a range vs a single iteration
+    let records: Vec<KnnRecord> = {
+        let mut rtn = Vec::new();
 
-    for maybe in iter {
-        let record = maybe?;
+        for maybe in iter {
+            rtn.push(maybe?);
+        }
 
-        let dist = algo(&datapoint, &record.data);
+        rtn
+    };
 
-        collected.push((dist, record));
-    }
+    // k will be the min of the specified high value or the total number of
+    // records
+    for k in args.k.get_range(records.len()) {
+        // collect the datapoints with the calculated euclidean distance from
+        // the provided datapoint
+        let mut collected: Vec<(f64, &KnnRecord)> = Vec::new();
 
-    // sort the collected records by the euclidean distance. since floats dont
-    // directly implement the std::cmp::Ord trait we will sort by
-    // f64::total_cmp
-    collected.sort_by(|(a, _), (b, _)| a.total_cmp(b));
+        for record in &records {
+            collected.push((algo(&datapoint, &record.data), record));
+        }
 
-    // figure out if the minimum value is either the k or the number of records
-    // collected
-    let len = std::cmp::min(collected.len(), args.k);
-    // collect the label groups and count how many are encountered
-    let mut groups = HashMap::with_capacity(len);
+        // sort the collected records by the euclidean distance. since floats
+        // dont directly implement the std::cmp::Ord trait we will sort by
+        // f64::total_cmp
+        collected.sort_by(|(a, _), (b, _)| a.total_cmp(b));
 
-    for index in 0..len {
-        groups.entry(collected[index].1.label.as_str())
-            // increment if the group was previously added
-            .and_modify(|counter| *counter += 1)
-            // insert if not already existing
-            .or_insert(1);
-    }
+        // collect the label groups and count how many are encountered
+        let mut groups = HashMap::with_capacity(k);
 
-    for (key, count) in groups {
-        // print the calculated percentage for each group found
-        println!("{key}: {count} {:.2}", (count as f64) / (len as f64));
+        for index in 0..k {
+            groups.entry(collected[index].1.label.as_str())
+                // increment if the group was previously added
+                .and_modify(|counter| *counter += 1)
+                // insert if not already existing
+                .or_insert(1);
+        }
+
+        println!("k value: {k}");
+
+        for (key, count) in groups {
+            // print the calculated percentage for each group found
+            println!("  {key}: {count} {:.2}", (count as f64) / (k as f64));
+        }
     }
 
     Ok(())
@@ -94,7 +105,7 @@ fn main() -> anyhow::Result<()> {
 struct CliArgs {
     /// the number of neighbors to lookup
     #[arg(short, default_value = "3")]
-    k: usize,
+    k: KValue,
 
     /// specifies the algorithm to use when calculating distances
     #[arg(long, default_value = "euclidean")]
@@ -119,6 +130,77 @@ struct CliArgs {
     /// path to the csv file to load
     #[arg(short, long)]
     file: PathBuf,
+}
+
+/// represents the k value to use for calculations
+#[derive(Debug, Clone)]
+pub struct KValue((usize, usize, usize));
+
+impl KValue {
+    fn parse_range(given: &str) -> Result<Option<(usize, usize)>, &'static str> {
+        if let Some((low,high)) = given.split_once('-') {
+            let Ok(low) = usize::from_str(low) else {
+                return Err("failed to parse low value for k range");
+            };
+
+            let Ok(high) = usize::from_str(high) else {
+                return Err("failed to parse high value for k range");
+            };
+
+            if low == 0 {
+                return Err("low value for k range cannot be 0");
+            }
+
+            if low > high {
+                return Err("low value for k range cannot be greater than the high value");
+            }
+
+            // add one to high so that we can treat it as inclusive
+            Ok(Some((low, high + 1)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn get_range(&self, total: usize) -> std::iter::StepBy<std::ops::Range<usize>> {
+        // figure out if the minimum value is either the k or the number of records
+        // collected
+        let len = std::cmp::min(total, self.0.1);
+
+        ((self.0.0)..(len)).step_by(self.0.2)
+    }
+}
+
+impl FromStr for KValue {
+    type Err = &'static str;
+
+    fn from_str(given: &str) -> Result<Self, Self::Err> {
+        if let Some((range, step)) = given.split_once(',') {
+            let Ok(step) = usize::from_str(step) else {
+                return Err("failed to parse step size for k value");
+            };
+
+            if step == 0 {
+                return Err("step size must be larger than 0");
+            }
+
+            if let Some((low, high)) = Self::parse_range(range)? {
+                Ok(Self((low, high, step)))
+            } else {
+                Err("you must specify a range when using a k range")
+            }
+        } else if let Some((low,high)) = Self::parse_range(given)? {
+            Ok(Self((low, high, 1)))
+        } else if let Ok(value) = usize::from_str(given) {
+            if value == 0 {
+                Err("k value cannot be 0")
+            } else {
+                Ok(Self((value, value + 1, 1)))
+            }
+        } else {
+            Err("invalid k value specified")
+        }
+    }
 }
 
 /// represents the algorithm to use when calculating distances
