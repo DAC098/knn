@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{Context, bail, Error};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use csv::{ReaderBuilder, StringRecord};
 
 fn main() -> anyhow::Result<()> {
@@ -24,6 +24,12 @@ fn main() -> anyhow::Result<()> {
             ErrorKind::NotFound => bail!("the requested csv file was not found"),
             _ => return Err(Error::new(err).context("failed to load csv file")),
         },
+    };
+
+    // store a reference to the distance algorithm
+    let algo = match args.algo {
+        AlgoType::Euclidean => euclidean_distance,
+        AlgoType::Manhattan => manhattan_distance,
     };
 
     let mut reader = ReaderBuilder::new()
@@ -50,7 +56,7 @@ fn main() -> anyhow::Result<()> {
     for maybe in iter {
         let record = maybe?;
 
-        let dist = euclidean_distance(&datapoint, &record.data);
+        let dist = algo(&datapoint, &record.data);
 
         collected.push((dist, record));
     }
@@ -90,6 +96,10 @@ struct CliArgs {
     #[arg(short, default_value = "3")]
     k: usize,
 
+    /// specifies the algorithm to use when calculating distances
+    #[arg(long, default_value = "euclidean")]
+    algo: AlgoType,
+
     /// the list of columns to use as datapoints
     #[arg(short, long = "col")]
     columns: Vec<ColumnType>,
@@ -109,6 +119,13 @@ struct CliArgs {
     /// path to the csv file to load
     #[arg(short, long)]
     file: PathBuf,
+}
+
+/// represents the algorithm to use when calculating distances
+#[derive(Debug, Clone, ValueEnum)]
+pub enum AlgoType {
+    Euclidean,
+    Manhattan,
 }
 
 /// represents the column type specified in the command line arguments
@@ -270,4 +287,13 @@ fn euclidean_distance(a_data: &[f64], b_data: &[f64]) -> f64 {
         .map(|(a, b)| (a - b).powf(2.0))
         .sum::<f64>()
         .sqrt()
+}
+
+/// calculates the manhattan distance between 2 sets of datapoints
+fn manhattan_distance(a_data: &[f64], b_data: &[f64]) -> f64 {
+    // similar to the euclidean distance expectation
+    a_data.iter()
+        .zip(b_data)
+        .map(|(a, b)| (a - b).abs())
+        .sum::<f64>()
 }
