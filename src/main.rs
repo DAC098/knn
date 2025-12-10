@@ -64,35 +64,19 @@ fn main() -> anyhow::Result<()> {
     // k will be the min of the specified high value or the total number of
     // records
     for k in args.k.get_range(records.len()) {
-        // collect the datapoints with the calculated euclidean distance from
-        // the provided datapoint
-        let mut collected: Vec<(f64, &KnnRecord)> = Vec::new();
+        let (min, groups) = classify_datapoint(k, &records, algo, &datapoint);
 
-        for record in &records {
-            collected.push((algo(&datapoint, &record.data), record));
+        print!("k value: {k}");
+
+        for v in &datapoint {
+            print!(" {v}");
         }
 
-        // sort the collected records by the euclidean distance. since floats
-        // dont directly implement the std::cmp::Ord trait we will sort by
-        // f64::total_cmp
-        collected.sort_by(|(a, _), (b, _)| a.total_cmp(b));
-
-        // collect the label groups and count how many are encountered
-        let mut groups = HashMap::with_capacity(k);
-
-        for index in 0..k {
-            groups.entry(collected[index].1.label.as_str())
-                // increment if the group was previously added
-                .and_modify(|counter| *counter += 1)
-                // insert if not already existing
-                .or_insert(1);
-        }
-
-        println!("k value: {k}");
+        println!();
 
         for (key, count) in groups {
             // print the calculated percentage for each group found
-            println!("  {key}: {count} {:.2}", (count as f64) / (k as f64));
+            println!("  {key}: {count} {:.2}", (count as f64) / (min as f64));
         }
     }
 
@@ -378,4 +362,43 @@ fn manhattan_distance(a_data: &[f64], b_data: &[f64]) -> f64 {
         .zip(b_data)
         .map(|(a, b)| (a - b).abs())
         .sum::<f64>()
+}
+
+/// determines the percentage classification for a given datapoint
+fn classify_datapoint<'a, F>(
+    k: usize,
+    records: &'a [KnnRecord],
+    algo: F,
+    datapoint: &[f64]
+) -> (usize, HashMap<&'a str, u32>)
+where
+    F: Fn(&[f64], &[f64]) -> f64
+{
+    // collect the datapoints with the calculated euclidean distance from
+    // the provided datapoint
+    let mut collected: Vec<(f64, &KnnRecord)> = Vec::new();
+
+    for record in records {
+        collected.push((algo(&datapoint, &record.data), record));
+    }
+
+    // sort the collected records by the euclidean distance. since floats
+    // dont directly implement the std::cmp::Ord trait we will sort by
+    // f64::total_cmp
+    collected.sort_by(|(a, _), (b, _)| a.total_cmp(b));
+
+    // collect the label groups and count how many are encountered
+    let mut groups = HashMap::with_capacity(k);
+
+    let min = std::cmp::min(k, collected.len());
+
+    for index in 0..min {
+        groups.entry(collected[index].1.label.as_str())
+            // increment if the group was previously added
+            .and_modify(|counter| *counter += 1)
+            // insert if not already existing
+            .or_insert(1);
+    }
+
+    (min, groups)
 }
