@@ -5,7 +5,7 @@ use std::io::{BufReader, ErrorKind};
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use anyhow::{Context, bail, Error};
+use anyhow::{Context, Error, bail};
 use clap::{Parser, ValueEnum};
 use csv::{ReaderBuilder, StringRecord};
 
@@ -42,11 +42,13 @@ fn main() -> anyhow::Result<()> {
     // of numbers as the provided number of columns
     let datapoint = parse_datapoint(&args.datapoint, columns.len())?;
     // map the csv records iterator into a list of knn records to use later
-    let iter = reader.records()
+    let iter = reader
+        .records()
         .enumerate()
         .map(|(index, maybe)| match maybe {
             Ok(record) => map_record(label, &columns, index, record),
-            Err(err) => Err(anyhow::Error::new(err).context(format!("failed to parse csv record. row: {index}")))
+            Err(err) => Err(anyhow::Error::new(err)
+                .context(format!("failed to parse csv record. row: {index}"))),
         });
 
     // collect all the records since we are offering the ability to run k over
@@ -122,7 +124,7 @@ pub struct KValue((usize, usize, usize));
 
 impl KValue {
     fn parse_range(given: &str) -> Result<Option<(usize, usize)>, &'static str> {
-        if let Some((low,high)) = given.split_once('-') {
+        if let Some((low, high)) = given.split_once('-') {
             let Ok(low) = usize::from_str(low) else {
                 return Err("failed to parse low value for k range");
             };
@@ -173,7 +175,7 @@ impl FromStr for KValue {
             } else {
                 Err("you must specify a range when using a k range")
             }
-        } else if let Some((low,high)) = Self::parse_range(given)? {
+        } else if let Some((low, high)) = Self::parse_range(given)? {
             Ok(Self((low, high, 1)))
         } else if let Ok(value) = usize::from_str(given) {
             if value == 0 {
@@ -304,13 +306,22 @@ where
 }
 
 /// maps at csv record into a [`KnnRecord`] with the expected columns and label
-fn map_record(label: usize, columns: &[usize], index: usize, record: StringRecord) -> anyhow::Result<KnnRecord> {
+fn map_record(
+    label: usize,
+    columns: &[usize],
+    index: usize,
+    record: StringRecord,
+) -> anyhow::Result<KnnRecord> {
     let mut rtn = Vec::with_capacity(columns.len());
 
     for col in columns {
         if let Some(value) = record.get(*col) {
             let Ok(v) = f64::from_str(&value) else {
-                bail!("failed to parse column data. row: {} column index: {}", index + 1, col + 1);
+                bail!(
+                    "failed to parse column data. row: {} column index: {}",
+                    index + 1,
+                    col + 1
+                );
             };
 
             rtn.push(v);
@@ -348,7 +359,8 @@ fn parse_datapoint(given: &str, num_cols: usize) -> anyhow::Result<Vec<f64>> {
 fn euclidean_distance(a_data: &[f64], b_data: &[f64]) -> f64 {
     // we will expect the total datapoints from a and b to be the same and just
     // zip them together for the iterator chain
-    a_data.iter()
+    a_data
+        .iter()
         .zip(b_data)
         .map(|(a, b)| (a - b).powf(2.0))
         .sum::<f64>()
@@ -358,7 +370,8 @@ fn euclidean_distance(a_data: &[f64], b_data: &[f64]) -> f64 {
 /// calculates the manhattan distance between 2 sets of datapoints
 fn manhattan_distance(a_data: &[f64], b_data: &[f64]) -> f64 {
     // similar to the euclidean distance expectation
-    a_data.iter()
+    a_data
+        .iter()
         .zip(b_data)
         .map(|(a, b)| (a - b).abs())
         .sum::<f64>()
@@ -369,10 +382,10 @@ fn classify_datapoint<'a, F>(
     k: usize,
     records: &'a [KnnRecord],
     algo: F,
-    datapoint: &[f64]
+    datapoint: &[f64],
 ) -> (usize, HashMap<&'a str, u32>)
 where
-    F: Fn(&[f64], &[f64]) -> f64
+    F: Fn(&[f64], &[f64]) -> f64,
 {
     // collect the datapoints with the calculated euclidean distance from
     // the provided datapoint
@@ -393,7 +406,8 @@ where
     let min = std::cmp::min(k, collected.len());
 
     for index in 0..min {
-        groups.entry(collected[index].1.label.as_str())
+        groups
+            .entry(collected[index].1.label.as_str())
             // increment if the group was previously added
             .and_modify(|counter| *counter += 1)
             // insert if not already existing
