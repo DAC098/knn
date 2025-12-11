@@ -1,13 +1,17 @@
 use std::collections::HashMap;
-use std::convert::Infallible;
 use std::fs::OpenOptions;
 use std::io::{BufReader, ErrorKind};
 use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{Context, Error, bail};
-use clap::{Parser, ValueEnum, Subcommand, Args};
+use clap::{Args, Parser, Subcommand};
 use csv::{Reader, ReaderBuilder, StringRecord};
+
+mod cli;
+mod distance;
+
+use cli::{AlgoType, ColumnType, Datapoint, KValue};
 
 fn main() -> anyhow::Result<()> {
     let args = CliArgs::parse();
@@ -73,108 +77,7 @@ pub struct PredictArgs {
 
     /// a comma delimitered list of numbers to estimate its group for
     #[arg(long)]
-    datapoint: String,
-
-}
-
-/// represents the k value to use for calculations
-#[derive(Debug, Clone)]
-pub struct KValue((usize, usize, usize));
-
-impl KValue {
-    fn parse_range(given: &str) -> Result<Option<(usize, usize)>, &'static str> {
-        if let Some((low, high)) = given.split_once('-') {
-            let Ok(low) = usize::from_str(low) else {
-                return Err("failed to parse low value for k range");
-            };
-
-            let Ok(high) = usize::from_str(high) else {
-                return Err("failed to parse high value for k range");
-            };
-
-            if low == 0 {
-                return Err("low value for k range cannot be 0");
-            }
-
-            if low > high {
-                return Err("low value for k range cannot be greater than the high value");
-            }
-
-            // add one to high so that we can treat it as inclusive
-            Ok(Some((low, high + 1)))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn get_range(&self, total: usize) -> std::iter::StepBy<std::ops::Range<usize>> {
-        // figure out if the minimum value is either the k or the number of records
-        // collected
-        let len = std::cmp::min(total, self.0.1);
-
-        ((self.0.0)..(len)).step_by(self.0.2)
-    }
-}
-
-impl FromStr for KValue {
-    type Err = &'static str;
-
-    fn from_str(given: &str) -> Result<Self, Self::Err> {
-        if let Some((range, step)) = given.split_once(',') {
-            let Ok(step) = usize::from_str(step) else {
-                return Err("failed to parse step size for k value");
-            };
-
-            if step == 0 {
-                return Err("step size must be larger than 0");
-            }
-
-            if let Some((low, high)) = Self::parse_range(range)? {
-                Ok(Self((low, high, step)))
-            } else {
-                Err("you must specify a range when using a k range")
-            }
-        } else if let Some((low, high)) = Self::parse_range(given)? {
-            Ok(Self((low, high, 1)))
-        } else if let Ok(value) = usize::from_str(given) {
-            if value == 0 {
-                Err("k value cannot be 0")
-            } else {
-                Ok(Self((value, value + 1, 1)))
-            }
-        } else {
-            Err("invalid k value specified")
-        }
-    }
-}
-
-/// represents the algorithm to use when calculating distances
-#[derive(Debug, Clone, ValueEnum)]
-pub enum AlgoType {
-    Euclidean,
-    Manhattan,
-}
-
-/// represents the column type specified in the command line arguments
-#[derive(Debug, Clone)]
-pub enum ColumnType {
-    /// a column name to attempt to lookup
-    Name(String),
-
-    /// a defined zero based index number in the csv
-    Index(usize),
-}
-
-impl FromStr for ColumnType {
-    type Err = Infallible;
-
-    fn from_str(given: &str) -> Result<Self, Self::Err> {
-        if let Ok(index) = usize::from_str(given) {
-            Ok(Self::Index(index))
-        } else {
-            Ok(Self::Name(given.into()))
-        }
-    }
+    datapoint: Datapoint,
 }
 
 /// represents the data collected from the csv for the knn
@@ -196,9 +99,7 @@ where
     let mut columns = Vec::with_capacity(retrieve.len());
 
     let found = if reader.has_headers() {
-        let known_headers = reader
-            .headers()
-            .context("failed to retrieve csv headers")?;
+        let known_headers = reader.headers().context("failed to retrieve csv headers")?;
 
         let headers = known_headers
             .iter()
@@ -210,7 +111,10 @@ where
             match to_get {
                 ColumnType::Name(name) => {
                     let Some(index) = headers.get(name.as_str()) else {
-                        bail!("unknown column header specified. column: {name}\navail: {:#?}", headers);
+                        bail!(
+                            "unknown column header specified. column: {name}\navail: {:#?}",
+                            headers
+                        );
                     };
 
                     columns.push(*index);
@@ -228,7 +132,10 @@ where
         match label {
             ColumnType::Name(name) => {
                 let Some(index) = headers.get(name.as_str()) else {
-                    bail!("unknown label column header specified. column: {name}\navail: {:#?}", headers);
+                    bail!(
+                        "unknown label column header specified. column: {name}\navail: {:#?}",
+                        headers
+                    );
                 };
 
                 *index
@@ -301,43 +208,6 @@ fn map_record(
     })
 }
 
-/// attempts to parse the requested datapoint
-fn parse_datapoint(given: &str, num_cols: usize) -> anyhow::Result<Vec<f64>> {
-    let mut rtn = Vec::with_capacity(num_cols);
-
-    for result in given.split(',').map(f64::from_str) {
-        rtn.push(result.context("failed to parse datapoint")?);
-    }
-
-    if rtn.len() != num_cols {
-        bail!("number of datapoints does not match number of columns");
-    }
-
-    Ok(rtn)
-}
-
-/// calculates the euclidean distance between 2 sets of datapoints
-fn euclidean_distance(a_data: &[f64], b_data: &[f64]) -> f64 {
-    // we will expect the total datapoints from a and b to be the same and just
-    // zip them together for the iterator chain
-    a_data
-        .iter()
-        .zip(b_data)
-        .map(|(a, b)| (a - b).powf(2.0))
-        .sum::<f64>()
-        .sqrt()
-}
-
-/// calculates the manhattan distance between 2 sets of datapoints
-fn manhattan_distance(a_data: &[f64], b_data: &[f64]) -> f64 {
-    // similar to the euclidean distance expectation
-    a_data
-        .iter()
-        .zip(b_data)
-        .map(|(a, b)| (a - b).abs())
-        .sum::<f64>()
-}
-
 /// determines the percentage classification for a given datapoint
 fn classify_datapoint<'a, F>(
     k: usize,
@@ -348,7 +218,7 @@ fn classify_datapoint<'a, F>(
 where
     F: Fn(&[f64], &[f64]) -> f64,
 {
-    // collect the datapoints with the calculated euclidean distance from
+    // collect the datapoints with the calculated distance function from
     // the provided datapoint
     let mut collected: Vec<(f64, &KnnRecord)> = Vec::new();
 
@@ -356,7 +226,7 @@ where
         collected.push((algo(&datapoint, &record.data), record));
     }
 
-    // sort the collected records by the euclidean distance. since floats
+    // sort the collected records by the distance function. since floats
     // dont directly implement the std::cmp::Ord trait we will sort by
     // f64::total_cmp
     collected.sort_by(|(a, _), (b, _)| a.total_cmp(b));
@@ -380,7 +250,7 @@ where
 
 fn knn_predict<R>(mut reader: Reader<R>, arg: PredictArgs) -> anyhow::Result<()>
 where
-    R: std::io::Read
+    R: std::io::Read,
 {
     if arg.columns.is_empty() {
         bail!("no columns specified to pull numeric data from");
@@ -388,15 +258,20 @@ where
 
     // store a reference to the distance algorithm
     let algo = match arg.algo {
-        AlgoType::Euclidean => euclidean_distance,
-        AlgoType::Manhattan => manhattan_distance,
+        AlgoType::Euclidean => distance::euclidean,
+        AlgoType::Manhattan => distance::manhattan,
     };
 
     // retrieve the label and datapoint columns from the csv reader
     let (label, columns) = get_columns_and_label(&mut reader, &arg.label, &arg.columns)?;
     // parse the provided datapoint to estimate. will expect a similar amount of
     // numbers as the provided number of columns
-    let datapoint = parse_datapoint(&arg.datapoint, columns.len())?;
+    let datapoint = arg.datapoint.into_inner();
+
+    if datapoint.len() != columns.len() {
+        bail!("number of datapoints does not match number of columns");
+    }
+
     // map the csv records iterator into a list of knn records to use later
     let iter = reader
         .records()
