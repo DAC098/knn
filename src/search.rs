@@ -1,11 +1,10 @@
 use std::collections::HashMap;
-use std::str::FromStr;
 
 use anyhow::bail;
 use clap::Args;
 
 use crate::cli::{AlgoType, ColumnType, KValue};
-use crate::csv::{Reader, StringRecord, get_columns_and_label};
+use crate::csv::{Reader, get_columns_and_label, KnnRecord, collect_records};
 use crate::distance;
 
 #[derive(Debug, Args)]
@@ -35,6 +34,12 @@ pub struct SearchArgs {
     label: ColumnType,
 }
 
+struct SearchResult {
+    k: usize,
+    percent: f64,
+    cols: Vec<usize>,
+}
+
 pub fn knn_search<R>(mut reader: Reader<R>, arg: SearchArgs) -> anyhow::Result<()>
 where
     R: std::io::Read,
@@ -55,87 +60,146 @@ where
 
     let (train, test) = split_dataset(&records, arg.test);
 
-    let selected: Vec<usize> = Vec::new();
-    let avail = columns.to_owned();
+    // we are going to keep this pre-allocated since it is being reused multiple
+    // times so we will just clear it when needed vs constaint memory
+    // allocations
+    let mut collected: Vec<(f64,  &KnnRecord)> = Vec::with_capacity(train.len());
+    let mut results = Vec::new();
 
-    while !avail.is_empty() {
-        let best = None::<usize>;
-    }
+    println!("train size: {} test size: {}", train.len(), test.len());
 
-    Ok(())
-}
+    // we are using the train dataset and manually iterating through
+    // the test dataset for datapoints to use for testing
+    for k in arg.k.get_range(train.len()) {
+        let mut selected: Vec<(usize, usize)> = Vec::new();
+        let mut avail: Vec<(usize, usize)> = columns
+            .iter()
+            .enumerate()
+            .map(|(index, col)| (index, *col))
+            .collect();
+        // can also pre allocate this since it will be reused for
+        // multiple test records
+        let mut groups = HashMap::with_capacity(k);
 
-/// represents the data collected from the csv for the knn
-#[derive(Debug)]
-pub struct KnnRecord {
-    cols: Vec<usize>,
-    data: Vec<f64>,
-    label: String,
-}
+        println!("k: {k}");
 
-/// maps at csv record into a [`KnnRecord`] with the expected columns and label
-fn map_record(
-    label: usize,
-    columns: &[usize],
-    index: usize,
-    record: StringRecord,
-) -> anyhow::Result<KnnRecord> {
-    let mut rtn = Vec::with_capacity(columns.len());
+        while !avail.is_empty() {
+            let mut best = None::<(usize, f64, (usize, usize))>;
+            let mut a_buf = Vec::with_capacity(selected.len() + 1);
+            let mut b_buf = Vec::with_capacity(selected.len() + 1);
 
-    for col in columns {
-        if let Some(value) = record.get(*col) {
-            let Ok(v) = f64::from_str(&value) else {
-                bail!(
-                    "failed to parse column data. row: {} column index: {}",
-                    index + 1,
-                    col + 1
-                );
+            for (avail_index, (index, col)) in avail.iter().enumerate() {
+                let mut passed = 0;
+                let mut failed = 0;
+                let mut unknown = 0;
+
+                for test_record in &test {
+                    collected.clear();
+                    groups.clear();
+
+                    collect_data(test_record, &mut a_buf, &selected, *index);
+
+                    // iterate through test records to collect and get distance for
+                    // current test record
+                    for train_record in &train {
+                        collect_data(train_record, &mut b_buf, &selected, *index);
+
+                        collected.push((algo(&a_buf, &b_buf), train_record));
+                    }
+
+                    // follow a similar process as the knn predict
+                    collected.sort_by(|(a, _), (b, _)| a.total_cmp(b));
+
+                    let min = std::cmp::min(k, collected.len());
+
+                    for index in 0..min {
+                        groups
+                            .entry(collected[index].1.label.as_str())
+                            .and_modify(|counter| *counter += 1)
+                            .or_insert(1);
+                    }
+
+                    let mut largest = None::<(f64, &str)>;
+
+                    for (key, count) in &groups {
+                        let prob = (*count as f64) / (min as f64);
+
+                        largest = if let Some((percent, label)) = largest {
+                            if prob > percent {
+                                Some((prob, key))
+                            } else {
+                                Some((percent, label))
+                            }
+                        } else {
+                            Some((prob, key))
+                        };
+                    }
+
+                    if let Some((_, label)) = largest {
+                        if label == test_record.label {
+                            passed += 1;
+                        } else {
+                            failed += 1;
+                        }
+                    } else {
+                        unknown += 1;
+                    }
+                }
+
+                let p_correct = (passed as f64) / (test.len() as f64);
+
+                print!("       ");
+
+                for (_, sel_col) in &selected {
+                    print!(" {sel_col}");
+                }
+
+                println!(" {col} | passed: {passed} {p_correct:.2} failed: {failed} unknown: {unknown}");
+
+                best = if let Some((best_index, best_p, (index_ref, best_col))) = best {
+                    if best_p > p_correct {
+                        Some((best_index, best_p, (index_ref, best_col)))
+                    } else {
+                        Some((avail_index, p_correct, (*index, *col)))
+                    }
+                } else {
+                    Some((avail_index, p_correct, (*index, *col)))
+                };
+            }
+
+            let Some((best_index, best_p, (index, col))) = best else {
+                break;
             };
 
-            rtn.push(v);
-        } else {
-            bail!("column data not found. column index: {}", col + 1);
+            selected.push((index, col));
+            avail.remove(best_index);
+
+            let mut cols = Vec::new();
+
+            for (_, col) in &selected {
+                cols.push(*col);
+            }
+
+            results.push(SearchResult {
+                k,
+                percent: best_p * 100.0,
+                cols,
+            });
         }
     }
 
-    let Some(found) = record.get(label) else {
-        bail!("failed to find label. label index: {index}");
-    };
+    for record in results {
+        print!("k {} % {:.2} cols:", record.k, record.percent);
 
-    Ok(KnnRecord {
-        cols: columns.to_owned(),
-        data: rtn,
-        label: found.to_owned(),
-    })
-}
+        for col in record.cols {
+            print!(" {col}");
+        }
 
-fn collect_records<R>(
-    mut reader: Reader<R>,
-    label: usize,
-    columns: &[usize],
-) -> anyhow::Result<Vec<KnnRecord>>
-where
-    R: std::io::Read,
-{
-    // map the csv records iterator into a list of knn records to use later
-    let iter = reader
-        .records()
-        .enumerate()
-        .map(|(index, maybe)| match maybe {
-            Ok(record) => map_record(label, &columns, index, record),
-            Err(err) => Err(anyhow::Error::new(err)
-                .context(format!("failed to parse csv record. row: {index}"))),
-        });
+        println!();
 
-    // collect all the records since we are offering the ability to run k over
-    // a range vs a single iteration
-    let mut rtn = Vec::new();
-
-    for maybe in iter {
-        rtn.push(maybe?);
     }
 
-    Ok(rtn)
+    Ok(())
 }
 
 fn split_dataset<'a>(
@@ -164,4 +228,20 @@ fn split_dataset<'a>(
     }
 
     (train, test)
+}
+
+fn collect_data(
+    record: &KnnRecord,
+    buf: &mut Vec<f64>,
+    selected: &Vec<(usize, usize)>,
+    checking: usize,
+) {
+    buf.clear();
+
+    // collect the datapoints from test record
+    for (index, _) in selected {
+        buf.push(record.data[*index]);
+    }
+
+    buf.push(record.data[checking]);
 }

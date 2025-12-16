@@ -1,11 +1,10 @@
 use std::collections::HashMap;
-use std::str::FromStr;
 
 use anyhow::bail;
 use clap::Args;
 
 use crate::cli::{AlgoType, ColumnType, Datapoint, KValue};
-use crate::csv::{Reader, StringRecord, get_columns_and_label};
+use crate::csv::{Reader, get_columns_and_label, KnnRecord, collect_records};
 use crate::distance;
 
 #[derive(Debug, Args)]
@@ -79,48 +78,6 @@ where
     Ok(())
 }
 
-/// represents the data collected from the csv for the knn
-#[derive(Debug)]
-pub struct KnnRecord {
-    data: Vec<f64>,
-    label: String,
-}
-
-/// maps at csv record into a [`KnnRecord`] with the expected columns and label
-fn map_record(
-    label: usize,
-    columns: &[usize],
-    index: usize,
-    record: StringRecord,
-) -> anyhow::Result<KnnRecord> {
-    let mut rtn = Vec::with_capacity(columns.len());
-
-    for col in columns {
-        if let Some(value) = record.get(*col) {
-            let Ok(v) = f64::from_str(&value) else {
-                bail!(
-                    "failed to parse column data. row: {} column index: {}",
-                    index + 1,
-                    col + 1
-                );
-            };
-
-            rtn.push(v);
-        } else {
-            bail!("column data not found. column index: {}", col + 1);
-        }
-    }
-
-    let Some(found) = record.get(label) else {
-        bail!("failed to find label. label index: {index}");
-    };
-
-    Ok(KnnRecord {
-        data: rtn,
-        label: found.to_owned(),
-    })
-}
-
 /// determines the percentage classification for a given datapoint
 fn classify_datapoint<'a, F>(
     k: usize,
@@ -159,33 +116,4 @@ where
     }
 
     (min, groups)
-}
-
-fn collect_records<R>(
-    mut reader: Reader<R>,
-    label: usize,
-    columns: &[usize],
-) -> anyhow::Result<Vec<KnnRecord>>
-where
-    R: std::io::Read,
-{
-    // map the csv records iterator into a list of knn records to use later
-    let iter = reader
-        .records()
-        .enumerate()
-        .map(|(index, maybe)| match maybe {
-            Ok(record) => map_record(label, &columns, index, record),
-            Err(err) => Err(anyhow::Error::new(err)
-                .context(format!("failed to parse csv record. row: {index}"))),
-        });
-
-    // collect all the records since we are offering the ability to run k over
-    // a range vs a single iteration
-    let mut rtn = Vec::new();
-
-    for maybe in iter {
-        rtn.push(maybe?);
-    }
-
-    Ok(rtn)
 }
