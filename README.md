@@ -99,3 +99,14 @@ The application uses some libraries to assist with parsing commands and csv
 files. All other code is custom made for this application using only the
 standard library. The code includes documentation and comments through out to
 illustrate or provide context to what is happening.
+
+If you don't have a premade binary then you can run the following command to
+build and execute the application.
+
+```
+# debug build
+cargo run -- application arguments
+
+# release build
+cargo run --release -- application arguments
+```
