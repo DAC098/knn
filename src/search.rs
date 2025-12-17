@@ -21,10 +21,6 @@ pub struct SearchArgs {
     #[arg(short, long = "col")]
     columns: Vec<ColumnType>,
 
-    /// the cross validation value to use
-    #[arg(long, default_value = "3")]
-    cv: usize,
-
     /// the percent of data to test against
     #[arg(long, default_value = "0.25")]
     test: f64,
@@ -124,6 +120,8 @@ where
                     for (key, count) in &groups {
                         let prob = (*count as f64) / (min as f64);
 
+                        // find the largest percent value from the collected
+                        // labels and store that.
                         largest = if let Some((percent, label)) = largest {
                             if prob > percent {
                                 Some((prob, key))
@@ -135,6 +133,8 @@ where
                         };
                     }
 
+                    // check to see if the largest value found is valid.
+                    // increment values accordingly
                     if let Some((_, label)) = largest {
                         if label == test_record.label {
                             passed += 1;
@@ -145,6 +145,11 @@ where
                         unknown += 1;
                     }
                 }
+
+                // this is not RMSE or similar and instead just calculating the
+                // percentage of records correct. the largest percentage will
+                // be included in the `selected` list. output the results for
+                // this iteration
 
                 let p_correct = (passed as f64) / (test.len() as f64);
 
@@ -171,6 +176,8 @@ where
                 break;
             };
 
+            // updated the selected columns and remove from available so we
+            // make progress and don't repeat columns
             selected.push((index, col));
             avail.remove(best_index);
 
@@ -180,6 +187,7 @@ where
                 cols.push(*col);
             }
 
+            // store the results to be output later
             results.push(SearchResult {
                 k,
                 percent: best_p * 100.0,
@@ -196,12 +204,14 @@ where
         }
 
         println!();
-
     }
 
     Ok(())
 }
 
+/// split the specified list of records based on the label provided
+///
+/// ordering is preserved from the original list
 fn split_dataset<'a>(
     records: &'a [KnnRecord],
     split: f64,
@@ -221,6 +231,7 @@ fn split_dataset<'a>(
     let mut test = Vec::new();
 
     for (_, mut records) in groups {
+        // split the record groups based on the split specified.
         let amount = (records.len() as f64 * split).floor() as usize;
 
         train.extend(records.split_off(amount));
