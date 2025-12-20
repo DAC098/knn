@@ -1,8 +1,30 @@
 # Rust KNN
 
-This is a small implementation of a K nearest neighbors algorithm written in
-Rust. It provides the ability to read in a specified CSV file and then perform
-classification predictions on the specified labels and columns.
+This is a small implementation of a K nearest neighbors (knn) algorithm written
+in Rust. It provides the ability to read in a specified CSV file and then
+perform classification predictions on the specified labels and columns.
+
+## Requirements
+
+The Rust version used during development is `1.86.0`. Other versions of Rust
+may work but would need to be formally tested.
+
+Currently all columns that are needed for calculation must be parsable as a 64
+bit floating point value. The label column can be any value as it is purely used
+as a key for classification. The CSV must be encoded as UTF-8 strings as all
+logic is built around parsing valid UTF-8.
+
+## Algorithm
+
+The actual knn algorithm can be found in the `src/classify.rs` file. When
+provided with a list of datapoints (and associated labels), distance algorithm,
+k number of neighbors, and a lookup datapoint it will return a dictionary of
+labels that were found around the lookup datapoint. The distance functions used
+will determine the order in which the datapoints are sorted by and take the k
+first values from the start of the list. The currently available distance
+functions are euclidean and manhattan with their implementation and unit tests
+located in `src/distance.rs`. Testing details for the knn are discussed at the
+bottom of the readme.
 
 ## Commands
 
@@ -83,16 +105,6 @@ $ knn -f ./penguins.csv \
     --datapoint 34.8,18.7,200,4000
 ```
 
-## Requirements
-
-The Rust version used during development is `1.86.0`. Other versions of Rust
-may work but would need to be formally tested.
-
-Currently all columns that are needed for calculation must be parsable as a 64
-bit floating point value. The label column can be any value as it is purely used
-as a key for classification. The CSV must be encoded as UTF-8 strings as all
-logic is built around parsing valid UTF-8.
-
 ## Code
 
 The application uses some libraries to assist with parsing commands and csv
@@ -109,4 +121,26 @@ cargo run -- application arguments
 
 # release build
 cargo run --release -- application arguments
+```
+
+## Testing
+
+`src/classify.rs` file contains unit tests to help verify that the
+implementation is correct. Below is a graph representing the test datapoints and
+their associated labels as well as the datapoints that are used to calculate the
+classification.
+
+![`test_datapoints_visual.png`](./test_datapoints_visual.png)
+
+The datapoints labeled `a_X` and `b_X` represent values with a known label
+attached. The letters indicate the actual label assigned to the value and the
+number indicates index (1-based) that the value appears in the array. The
+datapoints `T1` and `T2` are used to check the calculated labels for each test.
+Each test title details the `K` value, distance function, and test datapoint
+used to determine the classification.
+
+Tests can be run by using the following command:
+
+```
+cargo test
 ```

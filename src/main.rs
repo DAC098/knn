@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use anyhow::{Error, bail};
 use clap::{Parser, Subcommand};
 
+mod classify;
 mod cli;
 mod csv;
 mod distance;

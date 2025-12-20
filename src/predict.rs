@@ -1,10 +1,9 @@
-use std::collections::HashMap;
-
 use anyhow::bail;
 use clap::Args;
 
+use crate::classify::classify_datapoint_owned;
 use crate::cli::{AlgoType, ColumnType, Datapoint, KValue};
-use crate::csv::{Reader, get_columns_and_label, KnnRecord, collect_records};
+use crate::csv::{Reader, collect_records, get_columns_and_label};
 use crate::distance;
 
 #[derive(Debug, Args)]
@@ -59,7 +58,11 @@ where
     // k will be the min of the specified high value or the total number of
     // records
     for k in arg.k.get_range(records.len()) {
-        let (min, groups) = classify_datapoint(k, &records, algo, &datapoint);
+        let iter = records
+            .iter()
+            .map(|record| (&record.data, record.label.as_str()));
+
+        let (min, groups) = classify_datapoint_owned(k, iter, algo, &datapoint);
 
         print!("k value: {k} |");
 
@@ -76,44 +79,4 @@ where
     }
 
     Ok(())
-}
-
-/// determines the percentage classification for a given datapoint
-fn classify_datapoint<'a, F>(
-    k: usize,
-    records: &'a [KnnRecord],
-    algo: F,
-    datapoint: &[f64],
-) -> (usize, HashMap<&'a str, u32>)
-where
-    F: Fn(&[f64], &[f64]) -> f64,
-{
-    // collect the datapoints with the calculated distance function from
-    // the provided datapoint
-    let mut collected: Vec<(f64, &KnnRecord)> = Vec::new();
-
-    for record in records {
-        collected.push((algo(&datapoint, &record.data), record));
-    }
-
-    // sort the collected records by the distance function. since floats
-    // dont directly implement the std::cmp::Ord trait we will sort by
-    // f64::total_cmp
-    collected.sort_by(|(a, _), (b, _)| a.total_cmp(b));
-
-    // collect the label groups and count how many are encountered
-    let mut groups = HashMap::with_capacity(k);
-
-    let min = std::cmp::min(k, collected.len());
-
-    for index in 0..min {
-        groups
-            .entry(collected[index].1.label.as_str())
-            // increment if the group was previously added
-            .and_modify(|counter| *counter += 1)
-            // insert if not already existing
-            .or_insert(1);
-    }
-
-    (min, groups)
 }

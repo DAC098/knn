@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use anyhow::bail;
 use clap::Args;
 
+use crate::classify::classify_datapoint;
 use crate::cli::{AlgoType, ColumnType, KValue};
-use crate::csv::{Reader, get_columns_and_label, KnnRecord, collect_records};
+use crate::csv::{KnnRecord, Reader, collect_records, get_columns_and_label};
 use crate::distance;
 
 #[derive(Debug, Args)]
@@ -59,7 +60,7 @@ where
     // we are going to keep this pre-allocated since it is being reused multiple
     // times so we will just clear it when needed vs constaint memory
     // allocations
-    let mut collected: Vec<(f64,  &KnnRecord)> = Vec::with_capacity(train.len());
+    let mut collected = Vec::with_capacity(train.len());
     let mut results = Vec::new();
 
     println!("train size: {} test size: {}", train.len(), test.len());
@@ -82,7 +83,6 @@ where
         while !avail.is_empty() {
             let mut best = None::<(usize, f64, (usize, usize))>;
             let mut a_buf = Vec::with_capacity(selected.len() + 1);
-            let mut b_buf = Vec::with_capacity(selected.len() + 1);
 
             for (avail_index, (index, col)) in avail.iter().enumerate() {
                 let mut passed = 0;
@@ -95,25 +95,17 @@ where
 
                     collect_data(test_record, &mut a_buf, &selected, *index);
 
-                    // iterate through test records to collect and get distance for
-                    // current test record
-                    for train_record in &train {
-                        collect_data(train_record, &mut b_buf, &selected, *index);
+                    let iter = records.iter().map(|train_record| {
+                        // with how this is currently setup, we are going to be
+                        // allocating for every record due to the constraints of
+                        // the Iterator::map function
+                        let data = collect_data_owned(train_record, &selected, *index);
 
-                        collected.push((algo(&a_buf, &b_buf), train_record));
-                    }
+                        (data, train_record.label.as_str())
+                    });
 
-                    // follow a similar process as the knn predict
-                    collected.sort_by(|(a, _), (b, _)| a.total_cmp(b));
-
-                    let min = std::cmp::min(k, collected.len());
-
-                    for index in 0..min {
-                        groups
-                            .entry(collected[index].1.label.as_str())
-                            .and_modify(|counter| *counter += 1)
-                            .or_insert(1);
-                    }
+                    let min =
+                        classify_datapoint(k, iter, algo, &a_buf, &mut collected, &mut groups);
 
                     let mut largest = None::<(f64, &str)>;
 
@@ -159,7 +151,9 @@ where
                     print!(" {sel_col}");
                 }
 
-                println!(" {col} | passed: {passed} {p_correct:.2} failed: {failed} unknown: {unknown}");
+                println!(
+                    " {col} | passed: {passed} {p_correct:.2} failed: {failed} unknown: {unknown}"
+                );
 
                 best = if let Some((best_index, best_p, (index_ref, best_col))) = best {
                     if best_p > p_correct {
@@ -241,10 +235,22 @@ fn split_dataset<'a>(
     (train, test)
 }
 
+fn collect_data_owned(
+    record: &KnnRecord,
+    selected: &[(usize, usize)],
+    checking: usize,
+) -> Vec<f64> {
+    let mut rtn = Vec::with_capacity(selected.len() + 1);
+
+    collect_data(record, &mut rtn, selected, checking);
+
+    rtn
+}
+
 fn collect_data(
     record: &KnnRecord,
     buf: &mut Vec<f64>,
-    selected: &Vec<(usize, usize)>,
+    selected: &[(usize, usize)],
     checking: usize,
 ) {
     buf.clear();
